@@ -8,7 +8,7 @@ h_path = 'ai_decision.json'
 if os.path.exists(ml_path):
     d = json.load(open(ml_path))
     source = 'ML'
-elelif os.path.exists(h_path):
+elif os.path.exists(h_path):
     d = json.load(open(h_path))
     source = 'Heuristic'
 else:
