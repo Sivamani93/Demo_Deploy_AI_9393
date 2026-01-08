@@ -2,17 +2,13 @@
 import json, os, datetime
 
 now = datetime.datetime.utcnow().isoformat() + 'Z'
-
-# Prefer ML decision, fallback to heuristic
 ml_path = 'ai_decision_ml.json'
 h_path = 'ai_decision.json'
 
-d = None
-source = ''
 if os.path.exists(ml_path):
     d = json.load(open(ml_path))
     source = 'ML'
-elif os.path.exists(h_path):
+elelif os.path.exists(h_path):
     d = json.load(open(h_path))
     source = 'Heuristic'
 else:
@@ -20,6 +16,21 @@ else:
     source = 'None'
 
 signals = d.get('signals', {})
+
+# Warnings block
+warnings = []
+if signals.get('apk_size_mb',0) > 150:
+    warnings.append('APK > 150MB: Play Store may reject.')
+if signals.get('sensitive_permissions',0) > 0:
+    warnings.append('Sensitive permissions present: review required.')
+if signals.get('lint_warnings',0) > 50:
+    warnings.append('High lint warning count: fix quality issues.')
+if signals.get('coverage_pct',0) < 50:
+    warnings.append('Low test coverage: increase tests.')
+if signals.get('secrets_found',0) > 0:
+    warnings.append('Potential secrets found in code: remove immediately.')
+
+warn_html = ''.join([f"<li style='color:#d33'>{w}</li>" for w in warnings]) or '<li>No warnings</li>'
 
 html = f"""
 <html>
@@ -49,6 +60,10 @@ html = f"""
       <tr><th>Signal</th><th>Value</th></tr>
       {''.join([f"<tr><td>{k}</td><td><code>{signals.get(k)}</code></td></tr>" for k in ['failures','lint_warnings','changed_files','apk_size_mb','apk_size_delta_ratio','coverage_pct','build_duration_s','secrets_found','sensitive_permissions']])}
     </table>
+  </div>
+  <div class='card'>
+    <h3>Potential Rejection/Quality Warnings</h3>
+    <ul>{warn_html}</ul>
   </div>
   <div class='card'><em>Ready to evolve: swap heuristic with trained model and tune threshold via policy.</em></div>
 </body>
