@@ -1,0 +1,230 @@
+
+name: Mobile CI/CD with ML Gate
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-test-ml:
+    runs-on: ubuntu-latest
+
+    env:
+      AI_RISK_THRESHOLD: ${{ vars.AI_RISK_THRESHOLD || 0.5 }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Flutter analyze (lint)
+        run: flutter analyze --format=json > lint.json || true
+
+      - name: Run tests with coverage (NDJSON)
+        run: |
+          flutter test --machine --coverage > test.jsonl || true
+
+      - name: Restore previous APK size (if any)
+        uses: actions/download-artifact@v4
+        with:
+          name: previous-apk-size
+        continue-on-error: true
+
+      - name: Build APK
+        run: |
+          flutter clean || true
+          flutter build apk --release
+          ls -lh build/app/outputs/flutter-apk/
+
+      - name: Collect signals & heuristic decision
+        run: |
+          python - << 'PYCODE'
+          import json, os, subprocess
+
+          # Parse test events (NDJSON)
+          events = []
+          if os.path.exists('test.jsonl'):
+              with open('test.jsonl','r',encoding='utf-8') as f:
+                  for i, line in enumerate(f,1):
+                      line=line.strip()
+                      if not line: continue
+                      try:
+                          events.append(json.loads(line))
+                      except Exception as e:
+                          print(f"[warn] test line {i}: {e}")
+
+          failures = 0
+          for ev in events:
+              if isinstance(ev, dict):
+                  if ev.get('type')=='error': failures += 1
+                  if ev.get('type')=='testDone' and ev.get('result')=='failure': failures += 1
+
+          # Lint warnings
+          lint_warnings = 0
+          if os.path.exists('lint.json'):
+              try:
+                  lj = json.load(open('lint.json','r',encoding='utf-8'))
+                  lint_warnings = len(lj) if isinstance(lj, list) else len(lj.get('issues', []))
+              except Exception as e:
+                  print(f"[warn] lint.json parse error: {e}")
+
+          # APK size and delta
+          apk_path = 'build/app/outputs/flutter-apk/app-release.apk'
+          current_size = os.path.getsize(apk_path) if os.path.exists(apk_path) else 0
+          prev_size = 0
+          if os.path.exists('prev_apk_size.txt'):
+              try:
+                  prev_size = int(open('prev_apk_size.txt').read().strip())
+              except Exception:
+                  prev_size = 0
+          size_delta_ratio = abs(current_size - prev_size)/prev_size if prev_size>0 and current_size>0 else 0.0
+
+          # Changed files
+          try:
+              diff = subprocess.check_output(['git','diff','--name-only','HEAD~1..HEAD'], text=True)
+              changed_files = len([ln for ln in diff.splitlines() if ln.strip()])
+          except Exception:
+              changed_files = 1
+
+          # Optional placeholders
+          coverage_pct = 0.0
+          cov_path = 'coverage/lcov.info'
+          if os.path.exists(cov_path):
+              total, hit = 0, 0
+              with open(cov_path,'r',encoding='utf-8') as f:
+                  for ln in f:
+                      if ln.startswith('DA:'):
+                          total += 1
+                          try:
+                              cnt = int(ln.split(',')[1])
+                              if cnt>0: hit+=1
+                          except: pass
+              coverage_pct = (hit/total*100) if total else 0.0
+
+          signals = {
+              'failures': failures,
+              'lint_warnings': lint_warnings,
+              'changed_files': changed_files,
+              'apk_size_mb': round(current_size/1_000_000,2),
+              'apk_size_delta_ratio': round(size_delta_ratio,3),
+              'coverage_pct': round(coverage_pct,1),
+              'build_duration_s': 0,
+              'secrets_found': 0,
+              'sensitive_permissions': 0
+          }
+
+          # Heuristic risk (for reference)
+          risk = 0.0
+          risk += (0.4 if failures>0 else 0.0)
+          risk += min(0.2, lint_warnings/50.0)
+          risk += min(0.1, changed_files/20.0)
+          risk += min(0.1, size_delta_ratio)
+          threshold = float(os.getenv('AI_RISK_THRESHOLD','0.5'))
+          proceed = (failures==0) and (risk<threshold)
+
+          decision = {
+              'risk': round(risk,3),
+              'threshold': threshold,
+              'proceed': proceed,
+              'signals': signals
+          }
+          print(json.dumps(decision, indent=2))
+          open('ai_decision.json','w').write(json.dumps(decision))
+          PYCODE
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ML dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas scikit-learn joblib
+
+      - name: AI Gate (Model Inference)
+        run: python ai/infer_risk.py
+
+      - name: Generate Risk Report
+        run: python ai/render_report.py
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload Risk Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-risk-report
+          path: ai_report.html
+
+      - name: Log metrics for ML
+        if: always()
+        run: |
+          python - << 'PYCODE'
+          import csv, json, os, time
+          d = {}
+          path_ml = 'ai_decision_ml.json'
+          path_h = 'ai_decision.json'
+          if os.path.exists(path_ml):
+              d = json.load(open(path_ml))
+          elif os.path.exists(path_h):
+              d = json.load(open(path_h))
+
+          # default signals
+          s = d.get('signals', {})
+          def g(k, default=0):
+              return s.get(k, default)
+
+          row = {
+              'ts': int(time.time()),
+              'proceed': int(bool(d.get('proceed', False))),
+              'failures': g('failures'),
+              'lint_warnings': g('lint_warnings'),
+              'changed_files': g('changed_files'),
+              'apk_size_mb': g('apk_size_mb', 0.0),
+              'apk_size_delta_ratio': g('apk_size_delta_ratio', 0.0),
+              'coverage_pct': g('coverage_pct', 0.0),
+              'build_duration_s': g('build_duration_s'),
+              'secrets_found': g('secrets_found'),
+              'sensitive_permissions': g('sensitive_permissions')
+          }
+          os.makedirs('ai', exist_ok=True)
+          fn = 'ai/training_data.csv'
+          exists = os.path.exists(fn)
+          with open(fn,'a',newline='') as f:
+              import csv
+              w = csv.DictWriter(f, fieldnames=row.keys())
+              if not exists: w.writeheader()
+              w.writerow(row)
+          print('Logged row:', row)
+          PYCODE
+
+      - name: Upload ML metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-metrics
+          path: ai/training_data.csv
+
+      - name: Save APK size for next run
+        if: always()
+        run: |
+          stat -c%s build/app/outputs/flutter-apk/app-release.apk > prev_apk_size.txt || echo 0 > prev_apk_size.txt
+
+      - name: Upload previous APK size
+        uses: actions/upload-artifact@v4
+        with:
+          name: previous-apk-size
+          path: prev_apk_size.txt
