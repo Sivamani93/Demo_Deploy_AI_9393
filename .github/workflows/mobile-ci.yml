@@ -60,6 +60,12 @@ jobs:
           flutter build apk --release --build-name=1.0.0 --build-number=${{ github.run_number }}
           ls -lh build/app/outputs/flutter-apk/
 
+      - name: Upload unsigned APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
       - name: Collect signals & heuristic decision (includes review failure %)
         run: |
           python - << 'PYCODE'
