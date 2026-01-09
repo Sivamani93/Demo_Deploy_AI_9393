@@ -1,23 +1,35 @@
-
-name: Mobile CI/CD with ML Gate
-
+name: Mobile CI/CD (Build/Test) + Optional AI Gate [Secure + Toggle + Summary]
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
-jobs:
-  build-test-ml:
-    runs-on: ubuntu-latest
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
     env:
       AI_RISK_THRESHOLD: ${{ vars.AI_RISK_THRESHOLD || 0.5 }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Cache pub
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: ${{ runner.os }}-pub-
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -27,12 +39,14 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Flutter analyze (lint)
+      - name: Format check
+        run: dart format --output none --set-exit-if-changed .
+
+      - name: Flutter analyze (JSON)
         run: flutter analyze --format=json > lint.json || true
 
       - name: Run tests with coverage (NDJSON)
-        run: |
-          flutter test --machine --coverage > test.jsonl || true
+        run: flutter test --machine --coverage > test.jsonl || true
 
       - name: Restore previous APK size (if any)
         uses: actions/download-artifact@v4
@@ -40,107 +54,196 @@ jobs:
           name: previous-apk-size
         continue-on-error: true
 
-      - name: Build APK
+      - name: Build APK (release)
         run: |
-          flutter clean || true
-          flutter build apk --release
+          flutter clean
+          flutter build apk --release --build-name=1.0.0 --build-number=${{ github.run_number }}
           ls -lh build/app/outputs/flutter-apk/
 
-      - name: Collect signals & heuristic decision
+      - name: Collect signals & heuristic decision (includes review failure %)
         run: |
           python - << 'PYCODE'
           import json, os, subprocess
 
-          # Parse test events (NDJSON)
+          # --- Parse test events (NDJSON) ---
           events = []
           if os.path.exists('test.jsonl'):
-              with open('test.jsonl','r',encoding='utf-8') as f:
-                  for i, line in enumerate(f,1):
-                      line=line.strip()
-                      if not line: continue
-                      try:
-                          events.append(json.loads(line))
-                      except Exception as e:
-                          print(f"[warn] test line {i}: {e}")
-
+            with open('test.jsonl','r',encoding='utf-8') as f:
+              for i, line in enumerate(f,1):
+                line=line.strip()
+                if not line: continue
+                try:
+                  events.append(json.loads(line))
+                except Exception as e:
+                  print(f"[warn] test line {i}: {e}")
           failures = 0
           for ev in events:
-              if isinstance(ev, dict):
-                  if ev.get('type')=='error': failures += 1
-                  if ev.get('type')=='testDone' and ev.get('result')=='failure': failures += 1
+            if isinstance(ev, dict):
+              if ev.get('type')=='error': failures += 1
+              if ev.get('type')=='testDone' and ev.get('result')=='failure': failures += 1
 
-          # Lint warnings
+          # --- Lint warnings ---
           lint_warnings = 0
           if os.path.exists('lint.json'):
-              try:
-                  lj = json.load(open('lint.json','r',encoding='utf-8'))
-                  lint_warnings = len(lj) if isinstance(lj, list) else len(lj.get('issues', []))
-              except Exception as e:
-                  print(f"[warn] lint.json parse error: {e}")
+            try:
+              lj = json.load(open('lint.json','r',encoding='utf-8'))
+              lint_warnings = len(lj) if isinstance(lj, list) else len(lj.get('issues', []))
+            except Exception as e:
+              print(f"[warn] lint.json parse error: {e}")
 
-          # APK size and delta
+          # --- APK size & delta ---
           apk_path = 'build/app/outputs/flutter-apk/app-release.apk'
           current_size = os.path.getsize(apk_path) if os.path.exists(apk_path) else 0
           prev_size = 0
           if os.path.exists('prev_apk_size.txt'):
-              try:
-                  prev_size = int(open('prev_apk_size.txt').read().strip())
-              except Exception:
-                  prev_size = 0
+            try:
+              prev_size = int(open('prev_apk_size.txt').read().strip())
+            except Exception:
+              prev_size = 0
           size_delta_ratio = abs(current_size - prev_size)/prev_size if prev_size>0 and current_size>0 else 0.0
 
-          # Changed files
+          # --- Changed files (merge-base) ---
           try:
-              diff = subprocess.check_output(['git','diff','--name-only','HEAD~1..HEAD'], text=True)
-              changed_files = len([ln for ln in diff.splitlines() if ln.strip()])
+            diff = subprocess.check_output(['git','diff','--name-only','origin/main...HEAD'], text=True)
+            changed_files = len([ln for ln in diff.splitlines() if ln.strip()])
           except Exception:
-              changed_files = 1
+            changed_files = 1
 
-          # Optional placeholders
+          # --- Coverage ---
           coverage_pct = 0.0
           cov_path = 'coverage/lcov.info'
           if os.path.exists(cov_path):
-              total, hit = 0, 0
-              with open(cov_path,'r',encoding='utf-8') as f:
-                  for ln in f:
-                      if ln.startswith('DA:'):
-                          total += 1
-                          try:
-                              cnt = int(ln.split(',')[1])
-                              if cnt>0: hit+=1
-                          except: pass
-              coverage_pct = (hit/total*100) if total else 0.0
+            total, hit = 0, 0
+            with open(cov_path,'r',encoding='utf-8') as f:
+              for ln in f:
+                if ln.startswith('DA:'):
+                  total += 1
+                  try:
+                    cnt = int(ln.split(',')[1])
+                    if cnt>0: hit+=1
+                  except: pass
+            coverage_pct = (hit/total*100) if total else 0.0
 
+          # --- Signals ---
+          apk_size_mb = round((current_size or 0)/1_000_000,2)
           signals = {
-              'failures': failures,
-              'lint_warnings': lint_warnings,
-              'changed_files': changed_files,
-              'apk_size_mb': round(current_size/1_000_000,2),
-              'apk_size_delta_ratio': round(size_delta_ratio,3),
-              'coverage_pct': round(coverage_pct,1),
-              'build_duration_s': 0,
-              'secrets_found': 0,
-              'sensitive_permissions': 0
+            'failures': failures,
+            'lint_warnings': lint_warnings,
+            'changed_files': changed_files,
+            'apk_size_mb': apk_size_mb,
+            'apk_size_delta_ratio': round(size_delta_ratio,3),
+            'coverage_pct': round(coverage_pct,1),
+            'build_duration_s': 0,
+            'secrets_found': 0,
+            'sensitive_permissions': 0
           }
 
-          # Heuristic risk (for reference)
+          # --- App review failure % (derived checks) ---
+          review_checks_total = 6
+          review_failures = 0
+          if signals['secrets_found'] > 0: review_failures += 1
+          if signals['sensitive_permissions'] > 0: review_failures += 1
+          if signals['lint_warnings'] > 100: review_failures += 1
+          if signals['coverage_pct'] < 60: review_failures += 1
+          if signals['apk_size_mb'] > 150: review_failures += 1
+          if signals['failures'] > 0: review_failures += 1
+          review_failure_pct = round((review_failures / review_checks_total) * 100, 1)
+
+          # Heuristic risk
           risk = 0.0
-          risk += (0.4 if failures>0 else 0.0)
-          risk += min(0.2, lint_warnings/50.0)
-          risk += min(0.1, changed_files/20.0)
-          risk += min(0.1, size_delta_ratio)
+          risk += (0.4 if signals['failures']>0 else 0.0)
+          risk += min(0.2, signals['lint_warnings']/50.0)
+          risk += min(0.1, signals['changed_files']/20.0)
+          risk += min(0.1, signals['apk_size_delta_ratio'])
           threshold = float(os.getenv('AI_RISK_THRESHOLD','0.5'))
-          proceed = (failures==0) and (risk<threshold)
+          proceed = (signals['failures']==0) and (risk<threshold)
 
           decision = {
-              'risk': round(risk,3),
-              'threshold': threshold,
-              'proceed': proceed,
-              'signals': signals
+            'risk': round(risk,3),
+            'threshold': threshold,
+            'proceed': proceed,
+            'signals': signals,
+            'review': {
+              'checks_total': review_checks_total,
+              'failures': review_failures,
+              'failure_pct': review_failure_pct
+            }
           }
+
           print(json.dumps(decision, indent=2))
-          open('ai_decision.json','w').write(json.dumps(decision))
+          open('ai_decision.json','w',encoding='utf-8').write(json.dumps(decision))
           PYCODE
+
+      - name: Save APK size for next run
+        if: always()
+        run: |
+          stat -c%s build/app/outputs/flutter-apk/app-release.apk > prev_apk_size.txt
+
+      - name: Upload previous APK size
+        uses: actions/upload-artifact@v4
+        with:
+          name: previous-apk-size
+          path: prev_apk_size.txt
+
+      - name: Status Summary (Build/Test)
+        if: always()
+        run: |
+          python - << 'PY'
+          import os, json, sys
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          lines = []
+          lines.append("# 📋 Build/Test Status Summary")
+          # ENABLE_SIGNING variable is not directly available in env; show hint
+          lines.append(f"- **ENABLE_SIGNING repo variable**: `${{ vars.ENABLE_SIGNING }}` (set in repo settings)")
+          lines.append("- **AI Gate Trigger Rules**:")
+          lines.append("  - Push commit contains `[run-ai-gate]`")
+          lines.append("  - OR PR has label `ai-gate`")
+
+          h = {}
+          try:
+            with open("ai_decision.json","r",encoding="utf-8") as f: h = json.load(f)
+          except Exception:
+            pass
+
+          signals = h.get("signals",{}) if isinstance(h, dict) else {}
+          review  = h.get("review",{})  if isinstance(h, dict) else {}
+
+          apk_mb   = signals.get("apk_size_mb")
+          cov_pct  = signals.get("coverage_pct")
+          lint     = signals.get("lint_warnings")
+          changed  = signals.get("changed_files")
+
+          if review:
+            lines.append(f"- **App Review Failure**: {review.get('failure_pct',0):.1f}% ({review.get('failures',0)}/{review.get('checks_total',0)})")
+          else:
+            lines.append("- **App Review Failure**: (not computed in this run)")
+
+          extras = []
+          if apk_mb is not None: extras.append(f"APK size: {apk_mb:.2f} MB")
+          if cov_pct is not None: extras.append(f"Coverage: {cov_pct:.1f}%")
+          if lint   is not None: extras.append(f"Lint warnings: {lint}")
+          if changed is not None: extras.append(f"Changed files: {changed}")
+          if extras: lines.append("- " + "; ".join(extras))
+
+          try:
+            with open(summary_path,"a",encoding="utf-8") as s:
+              s.write("\n".join(lines) + "\n")
+          except Exception as e:
+            print("WARN: Could not write step summary:", e, file=sys.stderr)
+          PY
+
+  ai-gate:
+    runs-on: ubuntu-latest
+    needs: build-test
+    env:
+      AI_RISK_THRESHOLD: ${{ vars.AI_RISK_THRESHOLD || 0.5 }}
+    # Run ONLY when push message has [run-ai-gate] OR PR has the 'ai-gate' label
+    if: >
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[run-ai-gate]'))
+      || (github.event_name == 'pull_request' && contains(join(github.event.pull_request.labels.*.name, ','), 'ai-gate'))
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -150,19 +253,13 @@ jobs:
       - name: Install ML dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas scikit-learn joblib
+          pip install pandas scikit-learn joblib shap
 
       - name: AI Gate (Model Inference)
-        run: python ai/infer_risk.py
+        run: python ai/infer_risk.py --threshold "${{ env.AI_RISK_THRESHOLD }}" --fail-on-block
 
-      - name: Generate Risk Report
+      - name: Generate Risk Report (includes review % badge)
         run: python ai/render_report.py
-
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
 
       - name: Upload Risk Report
         uses: actions/upload-artifact@v4
@@ -170,61 +267,142 @@ jobs:
           name: ai-risk-report
           path: ai_report.html
 
-      - name: Log metrics for ML
-        if: always()
+      - name: Comment risk on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const ml = JSON.parse(fs.readFileSync('ai_decision_ml.json','utf8'));
+            const h  = JSON.parse(fs.readFileSync('ai_decision.json','utf8'));
+            const rv = (h.review && typeof h.review.failure_pct === 'number') ? h.review.failure_pct : 0;
+            const summary = JSON.stringify(ml, null, 2);
+            const html = fs.readFileSync('ai_report.html','utf8');
+            const line = `**App Review Failure:** ${rv.toFixed(1)}%`;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `${line}\n\n### AI Risk Decision\n\n\`\`\`json\n${summary}\n\`\`\`\n\n<details><summary>HTML Report</summary>\n\n${html.substring(0, 64000)}\n\n</details>`
+            });
+
+      # ==========================================
+      # 🔒 SIGNING & PLAY UPLOAD (TOGGLE VIA REPO VARIABLE)
+      # ==========================================
+      # Enable signing ONLY when you set repo variable ENABLE_SIGNING=true
+
+      - name: Decode keystore (secure)
+        if: vars.ENABLE_SIGNING == 'true'
         run: |
-          python - << 'PYCODE'
-          import csv, json, os, time
-          d = {}
-          path_ml = 'ai_decision_ml.json'
-          path_h = 'ai_decision.json'
-          if os.path.exists(path_ml):
-              d = json.load(open(path_ml))
-          elif os.path.exists(path_h):
-              d = json.load(open(path_h))
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > $PWD/my-release-key.keystore
+          echo "KEYSTORE_FILE=$PWD/my-release-key.keystore" >> $GITHUB_ENV
+          echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
+          echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> $GITHUB_ENV
+          echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
 
-          # default signals
-          s = d.get('signals', {})
-          def g(k, default=0):
-              return s.get(k, default)
+      - name: Build signed AAB (release)
+        if: vars.ENABLE_SIGNING == 'true'
+        run: |
+          flutter build appbundle --release \
+            --build-name=1.0.0 \
+            --build-number=${{ github.run_number }}
 
-          row = {
-              'ts': int(time.time()),
-              'proceed': int(bool(d.get('proceed', False))),
-              'failures': g('failures'),
-              'lint_warnings': g('lint_warnings'),
-              'changed_files': g('changed_files'),
-              'apk_size_mb': g('apk_size_mb', 0.0),
-              'apk_size_delta_ratio': g('apk_size_delta_ratio', 0.0),
-              'coverage_pct': g('coverage_pct', 0.0),
-              'build_duration_s': g('build_duration_s'),
-              'secrets_found': g('secrets_found'),
-              'sensitive_permissions': g('sensitive_permissions')
-          }
-          os.makedirs('ai', exist_ok=True)
-          fn = 'ai/training_data.csv'
-          exists = os.path.exists(fn)
-          with open(fn,'a',newline='') as f:
-              import csv
-              w = csv.DictWriter(f, fieldnames=row.keys())
-              if not exists: w.writeheader()
-              w.writerow(row)
-          print('Logged row:', row)
-          PYCODE
+      - name: Build signed APK (release)
+        if: vars.ENABLE_SIGNING == 'true'
+        run: |
+          flutter build apk --release \
+            --build-name=1.0.0 \
+            --build-number=${{ github.run_number }}
 
-      - name: Upload ML metrics
+      - name: Upload signed AAB artifact
+        if: vars.ENABLE_SIGNING == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ai-metrics
-          path: ai/training_data.csv
+          name: signed-app-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab
 
-      - name: Save APK size for next run
-        if: always()
-        run: |
-          stat -c%s build/app/outputs/flutter-apk/app-release.apk > prev_apk_size.txt || echo 0 > prev_apk_size.txt
-
-      - name: Upload previous APK size
+      - name: Upload signed APK artifact
+        if: vars.ENABLE_SIGNING == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: previous-apk-size
-          path: prev_apk_size.txt
+          name: signed-app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload to Google Play (Internal testing)
+        if: vars.ENABLE_SIGNING == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          packageName: com.aidemo.todo
+          releaseFiles: build/app/outputs/bundle/release/app-release.aab
+          track: internal
+
+      - name: Status Summary (AI Gate)
+        if: always()
+        run: |
+          python - << 'PY'
+          import os, json, sys
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          lines = []
+          lines.append("# 🤖 AI Gate Status Summary")
+
+          ml, h = {}, {}
+          try:
+            with open("ai_decision_ml.json","r",encoding="utf-8") as f: ml = json.load(f)
+          except Exception:
+            pass
+          try:
+            with open("ai_decision.json","r",encoding="utf-8") as f: h = json.load(f)
+          except Exception:
+            pass
+
+          lines.append(f"- **ENABLE_SIGNING repo variable**: `${{ vars.ENABLE_SIGNING }}`")
+
+          if ml:
+            lines.append(f"- **Decision**: {'✅ PROCEED' if ml.get('proceed') else '⛔ BLOCK'}")
+            if ml.get('prob') is not None and ml.get('threshold') is not None:
+              lines.append(f"- **Prob (proceed)**: {ml['prob']:.3f} | **Threshold**: {ml['threshold']:.3f}")
+            reasons = ml.get('reasons',[])
+            if reasons:
+              lines.append(f"- **Reasons**: {', '.join(reasons)}")
+          else:
+            lines.append("- **AI decision**: (not found)")
+
+          review = h.get("review",{}) if isinstance(h, dict) else {}
+          if review:
+            lines.append(f"- **App Review Failure**: {review.get('failure_pct',0):.1f}% "
+                         f"({review.get('failures',0)}/{review.get('checks_total',0)})")
+          else:
+            lines.append("- **App Review Failure**: (not computed in this run)")
+
+          # Signed artifact presence (best-effort)
+          if "${{ vars.ENABLE_SIGNING }}".strip().lower() == "true":
+            lines.append("- **Signing**: Enabled by `ENABLE_SIGNING=true`")
+            signed_aab = os.path.exists("build/app/outputs/bundle/release/app-release.aab")
+            signed_apk = os.path.exists("build/app/outputs/flutter-apk/app-release.apk")
+            lines.append(f"  - Signed AAB present: {'✅' if signed_aab else '❌'}")
+            lines.append(f"  - Signed APK present: {'✅' if signed_apk else '❌'}")
+          else:
+            lines.append("- **Signing**: Disabled (repo variable `ENABLE_SIGNING=false`)")
+
+          try:
+            with open(summary_path,"a",encoding="utf-8") as s:
+              s.write("\n".join(lines) + "\n")
+          except Exception as e:
+            print("WARN: Could not write step summary:", e, file=sys.stderr)
+          PY
+
+      - name: Status Line (log-friendly)
+        if: always()
+        run: |
+          python - << 'PY'
+          import os, json
+          h,ml={},{}
+          try: ml=json.load(open('ai_decision_ml.json','r',encoding='utf-8'))
+          except: pass
+          try: h=json.load(open('ai_decision.json','r',encoding='utf-8'))
+          except: pass
+          rv = (h.get('review') or {}).get('failure_pct')
+          decision = 'PROCEED' if ml.get('proceed') else ('BLOCK' if ml else 'N/A')
+          print(f"[STATUS] AI={decision} | ReviewFail%={rv if rv is not None else 'N/A'} | ENABLE_SIGNING=${{ vars.ENABLE_SIGNING }}")
+          PY

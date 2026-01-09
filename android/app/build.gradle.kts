@@ -42,3 +42,38 @@ android {
 flutter {
     source = "../.."
 }
+
+// ==============================================
+// 🔒 RELEASE SIGNING (DEMO ONLY — COMMENTED OUT)
+// ==============================================
+// This block demonstrates secure signing via environment variables in CI.
+// It is COMMENTED OUT to avoid using a keystore in normal runs.
+// Uncomment only when you explicitly opt-in and have secrets injected.
+
+/*
+android {
+    defaultConfig {
+        applicationId "com.aidemo.todo"  // Your package name
+    }
+
+    signingConfigs {
+        release {
+            // CI injects these env vars at build time:
+            // KEYSTORE_FILE, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
+            storeFile file(System.getenv("KEYSTORE_FILE"))
+            storePassword System.getenv("KEYSTORE_PASSWORD")
+            keyAlias System.getenv("KEY_ALIAS")
+            keyPassword System.getenv("KEY_PASSWORD")
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+*/

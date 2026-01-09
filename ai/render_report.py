@@ -1,74 +1,79 @@
+#! /usr/bin/env python3
+import json, os, html, datetime
 
-import json, os, datetime
-
-now = datetime.datetime.utcnow().isoformat() + 'Z'
-ml_path = 'ai_decision_ml.json'
-h_path = 'ai_decision.json'
+now = datetime.datetime.utcnow().isoformat() + "Z"
+ml_path = "ai_decision_ml.json"
+h_path = "ai_decision.json"
 
 if os.path.exists(ml_path):
-    d = json.load(open(ml_path))
-    source = 'ML'
+    d = json.load(open(ml_path, "r", encoding="utf-8"))
+    source = "ML"
 elif os.path.exists(h_path):
-    d = json.load(open(h_path))
-    source = 'Heuristic'
+    d = json.load(open(h_path, "r", encoding="utf-8"))
+    source = "Heuristic"
 else:
-    d = {'proceed': False, 'risk': None, 'signals': {}, 'prob': None, 'threshold': None}
-    source = 'None'
+    d = {"proceed": False, "risk": None, "signals": {}, "prob": None, "threshold": None}
+    source = "None"
 
-signals = d.get('signals', {})
+signals = d.get("signals", {})
+review = d.get("review", {}) or {}
+failure_pct = float(review.get("failure_pct", 0.0))
+checks_total = int(review.get("checks_total", 0))
+fails = int(review.get("failures", 0))
 
-# Warnings block
+# Badge color based on failure rate
+if failure_pct >= 50:
+    review_class = "block"
+elif failure_pct >= 20:
+    review_class = "heuristic"
+else:
+    review_class = "ok"
+
+review_badge = f'<span class="badge {review_class}">Review Failure: {failure_pct:.1f}% ({fails}/{checks_total})</span>'
+
 warnings = []
-if signals.get('apk_size_mb',0) > 150:
-    warnings.append('APK > 150MB: Play Store may reject.')
-if signals.get('sensitive_permissions',0) > 0:
-    warnings.append('Sensitive permissions present: review required.')
-if signals.get('lint_warnings',0) > 50:
-    warnings.append('High lint warning count: fix quality issues.')
-if signals.get('coverage_pct',0) < 50:
-    warnings.append('Low test coverage: increase tests.')
-if signals.get('secrets_found',0) > 0:
-    warnings.append('Potential secrets found in code: remove immediately.')
+if signals.get("apk_size_mb", 0) > 150: warnings.append("APK > 150MB: Play Store may reject.")
+if signals.get("sensitive_permissions", 0) > 0: warnings.append("Sensitive permissions present: review required.")
+if signals.get("lint_warnings", 0) > 100: warnings.append("High lint warning count: fix quality issues.")
+if signals.get("coverage_pct", 0) < 60: warnings.append("Low test coverage: increase tests.")
+if signals.get("secrets_found", 0) > 0: warnings.append("Potential secrets found in code: remove immediately.")
+if not warnings: warnings.append("No warnings")
 
-warn_html = ''.join([f"<li style='color:#d33'>{w}</li>" for w in warnings]) or '<li>No warnings</li>'
+def row(k):
+    v = signals.get(k, "")
+    return f"<tr><td>{html.escape(k)}</td><td>{html.escape(str(v))}</td></tr>"
 
-html = f"""
-<html>
-<head>
-  <meta charset='utf-8'/>
-  <title>AI Risk Report</title>
-  <style>
-    body {{ font-family: Arial, sans-serif; padding: 16px; }}
-    .ok {{ color: #0a7; }}
-    .bad {{ color: #d33; }}
-    .card {{ border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin-bottom: 12px; }}
-    code {{ background: #f7f7f7; padding: 2px 6px; border-radius: 4px; }}
-    table {{ border-collapse: collapse; }}
-    td, th {{ border: 1px solid #eee; padding: 6px 8px; }}
-  </style>
-</head>
-<body>
-  <h2>AI Risk Report ({source})</h2>
-  <div class='card'>
-    <p><strong>Timestamp:</strong> {now}</p>
-    <p><strong>Decision:</strong> <span class='{ 'ok' if d.get('proceed') else 'bad' }'>{ 'PROCEED' if d.get('proceed') else 'BLOCK' }</span></p>
-    <p><strong>Probability:</strong> <code>{d.get('prob')}</code> (threshold <code>{d.get('threshold')}</code>)</p>
-  </div>
-  <div class='card'>
-    <h3>Signals</h3>
-    <table>
-      <tr><th>Signal</th><th>Value</th></tr>
-      {''.join([f"<tr><td>{k}</td><td><code>{signals.get(k)}</code></td></tr>" for k in ['failures','lint_warnings','changed_files','apk_size_mb','apk_size_delta_ratio','coverage_pct','build_duration_s','secrets_found','sensitive_permissions']])}
-    </table>
-  </div>
-  <div class='card'>
-    <h3>Potential Rejection/Quality Warnings</h3>
-    <ul>{warn_html}</ul>
-  </div>
-  <div class='card'><em>Ready to evolve: swap heuristic with trained model and tune threshold via policy.</em></div>
-</body>
-</html>
+html_body = f"""<!doctype html>
+<html lang=\"en\"><head>
+<meta charset=\"utf-8\"><title>AI Risk Report</title>
+<style>
+body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;padding:16px;}}
+.badge{{display:inline-block;padding:4px 8px;border-radius:6px;color:#fff;font-weight:600}}
+.ok{{background:#2e7d32}} .block{{background:#c62828}} .ml{{background:#1565c0}} .heuristic{{background:#6a1b9a}}
+table{{border-collapse:collapse;margin-top:8px}} td,th{{border:1px solid #ddd;padding:6px 8px}}
+</style></head><body>
+<h1>AI Risk Report</h1>
+<p><span class=\"badge {'ml' if source=='ML' else 'heuristic'}\">{source}</span>
+<span class=\"badge {'ok' if d.get('proceed') else 'block'}\">{'PROCEED' if d.get('proceed') else 'BLOCK'}</span>
+&nbsp;&nbsp;<small>{now}</small></p>
+<p>{review_badge}</p>
+
+<p><b>Probability:</b> {html.escape(str(d.get('prob')))} &nbsp;&nbsp;
+<b>Threshold:</b> {html.escape(str(d.get('threshold')))}</p>
+
+<h3>Signals</h3>
+<table>
+<tr><th>Signal</th><th>Value</th></tr>
+{''.join(row(k) for k in ['failures','lint_warnings','changed_files','apk_size_mb',
+                           'apk_size_delta_ratio','coverage_pct','build_duration_s',
+                           'secrets_found','sensitive_permissions'])}
+<tr><td>review_failure_pct</td><td>{failure_pct:.1f}% ({fails}/{checks_total})</td></tr>
+</table>
+
+<h3>Potential Rejection/Quality Warnings</h3>
+<ul>{''.join(f'<li>{html.escape(w)}</li>' for w in warnings)}</ul>
+
+</body></html>
 """
-
-open('ai_report.html','w').write(html)
-print('Wrote ai_report.html')
+open("ai_report.html", "w", encoding="utf-8").write(html_body)
+print("Wrote ai_report.html")
