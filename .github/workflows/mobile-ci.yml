@@ -63,7 +63,7 @@ jobs:
       - name: Upload unsigned APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: unsigned-app-release-apk
+          name: unsigned-app-release-apk-${{ github.run_number }}
           path: build/app/outputs/flutter-apk/app-release.apk
 
       - name: Collect signals & heuristic decision (includes review failure %)
