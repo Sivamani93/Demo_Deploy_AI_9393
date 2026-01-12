@@ -6,6 +6,19 @@ import numpy as np
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Import intelligence modules
+try:
+    from .smart_threshold import calculate_dynamic_threshold, get_deployment_trend
+    from .anomaly_detector import load_anomaly_detector
+    from .feature_engineering import FeatureEngineer
+    from .contextual_intelligence import ContextualIntelligence
+    from .explainable_ai import ExplainableAI
+    INTELLIGENCE_AVAILABLE = True
+except ImportError:
+    # Fallback if modules not available
+    INTELLIGENCE_AVAILABLE = False
+    logging.warning("Advanced intelligence modules not available, using basic mode")
+
 def load_signals():
     base = {'failures':0,'lint_warnings':0,'changed_files':0,'apk_size_mb':0.0,
             'apk_size_delta_ratio':0.0,'coverage_pct':0.0,'build_duration_s':0,
@@ -39,6 +52,37 @@ def main():
 
     signals = load_signals()
     reasons = []
+    
+    # Apply intelligent feature engineering
+    if INTELLIGENCE_AVAILABLE:
+        try:
+            enhanced_signals = FeatureEngineer.engineer_features(signals)
+            risk_analysis = FeatureEngineer.create_risk_categories(signals)
+            deployment_context = ContextualIntelligence.get_deployment_context()
+            
+            # Load anomaly detector
+            anomaly_detector = load_anomaly_detector()
+            anomaly_result = anomaly_detector.detect_anomaly(signals)
+            
+            # Get dynamic threshold
+            dynamic_threshold = calculate_dynamic_threshold()
+            deployment_trend = get_deployment_trend()
+            
+        except Exception as e:
+            logging.warning(f"Intelligence modules failed: {e}")
+            enhanced_signals = signals
+            risk_analysis = {'risk_level': 'UNKNOWN', 'risk_score': 0}
+            deployment_context = {}
+            anomaly_result = {'is_anomaly': False}
+            dynamic_threshold = 0.524
+            deployment_trend = {'trend': 'unknown'}
+    else:
+        enhanced_signals = signals
+        risk_analysis = {'risk_level': 'UNKNOWN', 'risk_score': 0}
+        deployment_context = {}
+        anomaly_result = {'is_anomaly': False}
+        dynamic_threshold = 0.524
+        deployment_trend = {'trend': 'unknown'}
 
     art = 'ai/model/model.pkl'
     if not os.path.exists(art):
