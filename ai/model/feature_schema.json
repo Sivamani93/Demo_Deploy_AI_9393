@@ -1,0 +1,14 @@
+{
+  "features": [
+    "failures",
+    "lint_warnings",
+    "changed_files",
+    "apk_size_mb",
+    "apk_size_delta_ratio",
+    "coverage_pct",
+    "build_duration_s",
+    "secrets_found",
+    "sensitive_permissions"
+  ],
+  "threshold": 0.5241955255057071
+}
