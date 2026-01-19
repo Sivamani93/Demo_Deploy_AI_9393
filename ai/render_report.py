@@ -1,7 +1,7 @@
 #! /usr/bin/env python3
 import json, os, html, datetime
 
-now = datetime.datetime.utcnow().isoformat() + "Z"
+now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 ml_path = "ai_decision_ml.json"
 h_path = "ai_decision.json"
 

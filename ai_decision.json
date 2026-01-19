@@ -1,19 +1,18 @@
 {
-  "signals": {
-    "failures": 0,
-    "lint_warnings": 8,
-    "changed_files": 15,
-    "apk_size_mb": 28.5,
-    "apk_size_delta_ratio": 0.35,
-    "coverage_pct": 65.2,
-    "build_duration_s": 200,
-    "secrets_found": 0,
-    "sensitive_permissions": 3
-  },
-  "proceed": true,
-  "review": {
-    "failure_pct": 0.0,
-    "checks_total": 10,
-    "failures": 0
-  }
+    "review":  {
+                   "checks_total":  20,
+                   "failures":  3,
+                   "failure_pct":  15
+               },
+    "signals":  {
+                    "build_duration_s":  200,
+                    "failures":  0,
+                    "coverage_pct":  65.2,
+                    "apk_size_mb":  28.5,
+                    "sensitive_permissions":  3,
+                    "secrets_found":  0,
+                    "lint_warnings":  8,
+                    "changed_files":  15,
+                    "apk_size_delta_ratio":  0.35
+                }
 }

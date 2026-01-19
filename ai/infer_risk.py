@@ -81,7 +81,7 @@ def main():
            'confidence': round(confidence, 3), 'risk_score': risk_score,
            'top_risk_factors': top_risk_factors[:5], 'signals': signals, 'reasons': reasons,
            'model_version': bundle.get('version', '1.0'), 'prediction_timestamp': 
-           __import__('datetime').datetime.utcnow().isoformat() + 'Z'}
+           __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()}
     print(json.dumps(out, indent=2))
     open('ai_decision_ml.json','w',encoding='utf-8').write(json.dumps(out))
 
