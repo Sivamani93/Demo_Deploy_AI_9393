@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 void main() {
-  print('AI Gate test run'); // <-- new line added
   runApp(const MyApp());
 }
 
