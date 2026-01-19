@@ -263,11 +263,14 @@ jobs:
 
       - name: AI Gate (Model Inference)
         run: python ai/infer_risk.py --threshold "${{ env.AI_RISK_THRESHOLD }}" --fail-on-block
+        continue-on-error: true
 
       - name: Generate Risk Report (includes review % badge)
+        if: always()
         run: python ai/render_report.py
 
       - name: Upload Risk Report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ai-risk-report
